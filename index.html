@@ -10,14 +10,57 @@
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body {
       position: fixed; width: 100%; height: 100%;
-      background: #050510; overflow: hidden;
+      background: #87CEEB; overflow: hidden;
       touch-action: none; user-select: none; -webkit-user-select: none;
     }
     canvas { display: block; position: fixed; top: 0; left: 0; }
+    #diffWrap {
+      position: fixed;
+      bottom: 10%;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: block;
+      text-align: center;
+      pointer-events: auto;
+    }
+    #diffSlider {
+      width: 200px;
+      cursor: pointer;
+      accent-color: #FFD700;
+      height: 6px;
+      -webkit-appearance: none;
+      appearance: none;
+      border-radius: 3px;
+      outline: none;
+      background: rgba(255,255,255,0.5);
+    }
+    #diffSlider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #FFD700;
+      cursor: pointer;
+      border: 2px solid #cc8800;
+      box-shadow: 0 0 6px rgba(255,215,0,0.8);
+    }
+    #diffSlider::-moz-range-thumb {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #FFD700;
+      cursor: pointer;
+      border: 2px solid #cc8800;
+    }
   </style>
 </head>
 <body>
 <canvas id="c"></canvas>
+<div id="diffWrap">
+  <input id="diffSlider" type="range" min="1" max="5" value="3" step="1">
+</div>
 <script>
 'use strict';
 
@@ -29,23 +72,23 @@ let W = 0, H = 0;
 // ── CONSTANTS ─────────────────────────────────────────────────────────────────
 const GRAVITY      = 0.46;
 const FLAP_FORCE   = -9.2;
-const BASE_SPEED   = 2.8;
 const PIPE_W       = 72;
 const GROUND_H     = 80;
 const BIRD_R       = 30;
-const PIPE_FRAMES  = 108;
 
 // ── STATE ─────────────────────────────────────────────────────────────────────
 const S = { START: 0, PLAY: 1, DEAD: 2 };
-let state      = S.START;
-let score      = 0;
-let best       = +localStorage.getItem('fpb') || 0;
-let ticks      = 0;   // always increments (for animations)
-let gameTicks  = 0;   // increments only while playing
-let pipes      = [];
-let groundOff  = 0;
-let deathTick  = 0;
-let shakeAmt   = 0;
+let state         = S.START;
+let score         = 0;
+let best          = +localStorage.getItem('fpb') || 0;
+let ticks         = 0;   // always increments (for animations)
+let gameTicks     = 0;   // increments only while playing
+let pipes         = [];
+let groundOff     = 0;
+let deathTick     = 0;
+let shakeAmt      = 0;
+let difficulty    = 3;         // 1–5
+let deathParticles = [];       // head explosion particles
 
 // ── BIRD ──────────────────────────────────────────────────────────────────────
 const bird = { x: 0, y: 0, vy: 0, rot: 0 };
@@ -61,75 +104,29 @@ birdImg.onload  = () => imgOk = true;
 birdImg.onerror = () => imgOk = false;
 birdImg.src = 'image.jpeg';
 
-// ── STARS (pre-generated) ─────────────────────────────────────────────────────
-const STARS = Array.from({ length: 90 }, () => ({
-  nx: Math.random(), ny: Math.random() * 0.72,
-  sz: Math.random() < 0.75 ? 1 : 2,
-  phase: Math.random() * Math.PI * 2,
-  spd:   0.008 + Math.random() * 0.018,
-}));
+// ── DIFFICULTY CONFIG ─────────────────────────────────────────────────────────
+const DIFF_LABELS = ['Балтика 0', 'Легко', 'Средне', 'Жёстко', 'Бугульма'];
+const DIFF_CONFIGS = [
+  { speed: 2.0, gap: 220, spawnFrames: 140 },
+  { speed: 2.6, gap: 195, spawnFrames: 118 },
+  { speed: 3.5, gap: 170, spawnFrames: 100 },
+  { speed: 4.5, gap: 148, spawnFrames: 82  },
+  { speed: 6.0, gap: 125, spawnFrames: 65  },
+];
+function getDiffConfig() { return DIFF_CONFIGS[difficulty - 1]; }
 
-// ── SKYLINE LAYERS ────────────────────────────────────────────────────────────
-let skyLayers = [];   // { canvas, speed }
-let skyOff    = [0, 0, 0];
-
-function makeSkyline(numB, minFrac, maxFrac, fillColor, winAlpha, spd) {
-  const sc   = document.createElement('canvas');
-  sc.width   = W * 2;
-  sc.height  = H;
-  const sx   = sc.getContext('2d');
-  const gy   = H - GROUND_H;
-  const bw   = (W * 2) / numB;
-
-  for (let i = 0; i < numB; i++) {
-    const bh = (minFrac + Math.random() * (maxFrac - minFrac)) * gy;
-    const bx = i * bw;
-    const by = gy - bh;
-    const bwActual = bw * 0.82;
-
-    sx.fillStyle = fillColor;
-    sx.fillRect(bx, by, bwActual, bh);
-
-    // Lit windows
-    const ws = 3, wg = 9;
-    for (let wy = by + 7; wy < gy - 4; wy += wg) {
-      for (let wx = bx + 5; wx < bx + bwActual - 4; wx += wg) {
-        if (Math.random() < 0.28) {
-          const bright = Math.random() < 0.3;
-          sx.fillStyle = bright
-            ? `rgba(255,230,80,${winAlpha * 1.8})`
-            : `rgba(80,100,255,${winAlpha})`;
-          sx.fillRect(wx, wy, ws, ws);
-        }
-      }
-    }
-    // Antenna
-    if (Math.random() < 0.35) {
-      sx.fillStyle = fillColor;
-      sx.fillRect(bx + bwActual * 0.45, by - 18, 3, 18);
-      sx.fillStyle = 'rgba(255,60,60,0.7)';
-      sx.beginPath();
-      sx.arc(bx + bwActual * 0.45 + 1.5, by - 20, 2.5, 0, Math.PI * 2);
-      sx.fill();
-    }
-  }
-  return { canvas: sc, speed: spd };
-}
-
-function buildSkylines() {
-  skyLayers = [
-    makeSkyline(14, 0.18, 0.48, '#0d0c2e', 0.15, 0.18),
-    makeSkyline(20, 0.10, 0.36, '#09091f', 0.22, 0.45),
-    makeSkyline(28, 0.06, 0.22, '#06060f', 0.30, 0.85),
-  ];
-  skyOff = [0, 0, 0];
-}
+// ── DIFFICULTY SLIDER ─────────────────────────────────────────────────────────
+const diffWrap   = document.getElementById('diffWrap');
+const diffSlider = document.getElementById('diffSlider');
+diffSlider.addEventListener('input', () => { difficulty = +diffSlider.value; });
+// Prevent slider interaction from triggering game flap
+diffSlider.addEventListener('mousedown',  e => e.stopPropagation());
+diffSlider.addEventListener('touchstart', e => e.stopPropagation(), { passive: false });
 
 // ── RESIZE ────────────────────────────────────────────────────────────────────
 function resize() {
   W = canvas.width  = window.innerWidth;
   H = canvas.height = window.innerHeight;
-  buildSkylines();
 }
 window.addEventListener('resize', resize);
 
@@ -150,7 +147,7 @@ const PAT_SNARE = [0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0];
 const PAT_HIHAT = [1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0];
 const PAT_OPHAT = [0,0,0,0,0,0,1,0,0,0,0,0,0,0,1,0];
 const PAT_BASS  = [1,0,0,0,0,1,0,0,1,0,0,0,0,0,1,0];
-const BASS_FREQ = [55, 55, 73.4, 55, 49, 55, 65.4, 55]; // A1,D2,A1,G1...
+const BASS_FREQ = [55, 55, 73.4, 55, 49, 55, 65.4, 55];
 
 function initAudio() {
   if (actx) return;
@@ -177,7 +174,6 @@ function kick(t) {
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
   o.connect(g); g.connect(beatGain);
   o.start(t); o.stop(t + 0.45);
-  // Click transient
   const c = actx.createOscillator();
   const cg = actx.createGain();
   c.type = 'square'; c.frequency.value = 800;
@@ -188,7 +184,6 @@ function kick(t) {
 }
 
 function snare(t) {
-  // Noise burst
   const len = Math.floor(actx.sampleRate * 0.16);
   const buf = actx.createBuffer(1, len, actx.sampleRate);
   const d   = buf.getChannelData(0);
@@ -200,7 +195,6 @@ function snare(t) {
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
   src.connect(hp); hp.connect(g); g.connect(beatGain);
   src.start(t); src.stop(t + 0.16);
-  // Body tone
   const o  = actx.createOscillator();
   const og = actx.createGain();
   o.type = 'triangle'; o.frequency.value = 190;
@@ -297,9 +291,25 @@ function speakFlap() {
   } catch (_) {}
 }
 
+function speakDeath() {
+  if (!window.speechSynthesis) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance('не спорь с нами');
+    u.lang   = 'ru-RU';
+    u.rate   = 0.8;
+    u.pitch  = 0.7;
+    u.volume = 1.0;
+    const rv = speechVoices.find(v => v.lang && v.lang.startsWith('ru'));
+    if (rv) u.voice = rv;
+    speechSynthesis.speak(u);
+  } catch (_) {}
+}
+
 // ── PIPE SPAWNING & DRAWING ────────────────────────────────────────────────────
 function spawnPipe() {
-  const gap  = Math.max(155, Math.min(215, H * 0.27));
+  const cfg  = getDiffConfig();
+  const gap  = cfg.gap;
   const minY = H * 0.14;
   const maxY = H - GROUND_H - gap - H * 0.14;
   const topH = minY + Math.random() * (maxY - minY);
@@ -356,9 +366,7 @@ function drawChainPipe(px, py, pw, ph, capBottom) {
 function drawPipes() {
   for (const p of pipes) {
     const gy = H - GROUND_H;
-    // Top pipe
     drawChainPipe(p.x, 0, PIPE_W, p.topH, true);
-    // Bottom pipe
     const by = p.topH + p.gap;
     drawChainPipe(p.x, by, PIPE_W, gy - by, false);
   }
@@ -375,15 +383,7 @@ function drawBird() {
     ctx.arc(0, 0, BIRD_R, 0, Math.PI * 2);
     ctx.clip();
     ctx.drawImage(birdImg, -BIRD_R, -BIRD_R, BIRD_R * 2, BIRD_R * 2);
-    // Gold ring
-    ctx.beginPath();
-    ctx.arc(0, 0, BIRD_R, 0, Math.PI * 2);
-    ctx.strokeStyle = '#FFD700';
-    ctx.lineWidth   = 3.5;
-    ctx.shadowColor = '#FFD700';
-    ctx.shadowBlur  = 10;
-    ctx.stroke();
-    ctx.shadowBlur = 0;
+    // No ring decoration
   } else {
     // Procedural fallback bird
     const bg = ctx.createRadialGradient(-6, -6, 4, 0, 0, BIRD_R);
@@ -408,81 +408,128 @@ function drawBird() {
     ctx.beginPath();
     ctx.moveTo(22, -4); ctx.lineTo(34, 0); ctx.lineTo(22, 4);
     ctx.fill();
-    // Ring
-    ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 3;
-    ctx.shadowColor = '#FFD700'; ctx.shadowBlur = 10;
-    ctx.beginPath(); ctx.arc(0, 0, BIRD_R, 0, Math.PI * 2); ctx.stroke();
-    ctx.shadowBlur = 0;
+    // No ring decoration
   }
   ctx.restore();
 }
 
-// ── BACKGROUND ────────────────────────────────────────────────────────────────
+// ── BACKGROUND: BEACH/SEA THEME ───────────────────────────────────────────────
 function drawBackground() {
-  // Sky gradient
-  const sg = ctx.createLinearGradient(0, 0, 0, H - GROUND_H);
-  sg.addColorStop(0,    '#04040f');
-  sg.addColorStop(0.45, '#0b0620');
-  sg.addColorStop(1,    '#190e3a');
+  const gy       = H - GROUND_H;
+  const horizonY = gy * 0.60;
+
+  // Sky gradient: light blue at top → warm golden-yellow near horizon
+  const sg = ctx.createLinearGradient(0, 0, 0, horizonY);
+  sg.addColorStop(0,    '#4FC3F7');
+  sg.addColorStop(0.55, '#87CEEB');
+  sg.addColorStop(1,    '#FFD580');
   ctx.fillStyle = sg;
-  ctx.fillRect(0, 0, W, H - GROUND_H);
+  ctx.fillRect(0, 0, W, horizonY);
 
-  // Stars
-  for (const s of STARS) {
-    const a = 0.25 + 0.55 * Math.abs(Math.sin(ticks * s.spd + s.phase));
-    ctx.globalAlpha = a;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(s.nx * W, s.ny * (H - GROUND_H), s.sz, s.sz);
-  }
-  ctx.globalAlpha = 1;
-
-  // Moon
-  ctx.fillStyle = 'rgba(255,255,200,0.85)';
-  ctx.shadowColor = 'rgba(255,255,150,0.5)';
-  ctx.shadowBlur  = 22;
+  // Sun glow halo
+  const sunX = W * 0.82, sunY = H * 0.10, sunR = 32;
+  const sunGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR * 3.2);
+  sunGrad.addColorStop(0,    'rgba(255,255,120,0.95)');
+  sunGrad.addColorStop(0.3,  'rgba(255,230,60,0.55)');
+  sunGrad.addColorStop(0.65, 'rgba(255,200,0,0.18)');
+  sunGrad.addColorStop(1,    'rgba(255,180,0,0)');
+  ctx.fillStyle = sunGrad;
+  ctx.fillRect(sunX - sunR * 3.5, sunY - sunR * 3.5, sunR * 7, sunR * 7);
+  // Sun disc
+  ctx.fillStyle = '#FFEE44';
   ctx.beginPath();
-  ctx.arc(W * 0.82, H * 0.12, 24, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.shadowBlur = 0;
-  // Moon crescent shadow
-  ctx.fillStyle = '#08051a';
-  ctx.beginPath();
-  ctx.arc(W * 0.82 + 10, H * 0.12 - 4, 20, 0, Math.PI * 2);
+  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
   ctx.fill();
 
-  // Parallax city layers
-  for (let i = 0; i < skyLayers.length; i++) {
-    const sc  = skyLayers[i].canvas;
-    const off = skyOff[i] % (W * 2);
-    ctx.drawImage(sc, -off, 0);
-    ctx.drawImage(sc, W * 2 - off, 0);
+  // Sea band: turquoise gradient
+  const seaGrad = ctx.createLinearGradient(0, horizonY, 0, gy);
+  seaGrad.addColorStop(0,   '#40E0D0');
+  seaGrad.addColorStop(0.4, '#00B4D8');
+  seaGrad.addColorStop(1,   '#0077B6');
+  ctx.fillStyle = seaGrad;
+  ctx.fillRect(0, horizonY, W, gy - horizonY);
+
+  // Animated sea waves
+  for (let wi = 0; wi < 5; wi++) {
+    const waveY = horizonY + (gy - horizonY) * (0.08 + wi * 0.18);
+    const amp   = 3 + wi * 2;
+    const freq  = 0.020 - wi * 0.002;
+    const phase = ticks * (0.05 - wi * 0.006) + wi * 1.4;
+    ctx.strokeStyle = `rgba(255,255,255,${0.50 - wi * 0.07})`;
+    ctx.lineWidth   = 1.5 + wi * 0.25;
+    ctx.beginPath();
+    ctx.moveTo(0, waveY + Math.sin(phase) * amp);
+    for (let x = 6; x <= W; x += 6) {
+      ctx.lineTo(x, waveY + Math.sin(x * freq + phase) * amp);
+    }
+    ctx.stroke();
   }
 }
 
 function drawGround() {
   const gy = H - GROUND_H;
-  const gg = ctx.createLinearGradient(0, gy, 0, H);
-  gg.addColorStop(0,   '#1a1a30');
-  gg.addColorStop(0.3, '#141425');
-  gg.addColorStop(1,   '#0a0a18');
-  ctx.fillStyle = gg;
+  // Sandy beach gradient
+  const sg = ctx.createLinearGradient(0, gy, 0, H);
+  sg.addColorStop(0,   '#F5C842');
+  sg.addColorStop(0.3, '#E8B84B');
+  sg.addColorStop(1,   '#C8973C');
+  ctx.fillStyle = sg;
   ctx.fillRect(0, gy, W, GROUND_H);
-  // Gold top line
-  ctx.strokeStyle = '#FFD700';
-  ctx.lineWidth   = 2;
-  ctx.shadowColor = '#FFD700';
-  ctx.shadowBlur  = 8;
-  ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-  ctx.shadowBlur  = 0;
-  // Scrolling dashes
-  ctx.strokeStyle = 'rgba(255,215,0,0.25)';
-  ctx.lineWidth   = 1;
-  const sp = 60, gOff = groundOff % sp;
-  for (let x = -gOff; x < W + sp; x += sp) {
-    ctx.beginPath();
-    ctx.moveTo(x, gy + 24);
-    ctx.lineTo(x + 32, gy + 24);
-    ctx.stroke();
+  // Foamy wave edge at sand/sea border
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth   = 3;
+  const phase = ticks * 0.04;
+  ctx.beginPath();
+  ctx.moveTo(0, gy + Math.sin(phase) * 3);
+  for (let x = 6; x <= W; x += 6) {
+    ctx.lineTo(x, gy + Math.sin(x * 0.025 + phase) * 3);
+  }
+  ctx.stroke();
+}
+
+// ── DEATH PARTICLES ───────────────────────────────────────────────────────────
+function spawnDeathParticles() {
+  deathParticles = [];
+  const N = 16;
+  for (let i = 0; i < N; i++) {
+    const angle = (Math.PI * 2 * i / N) + (Math.random() - 0.5) * 0.9;
+    const speed = 2.5 + Math.random() * 5.5;
+    deathParticles.push({
+      x:        bird.x,
+      y:        bird.y,
+      vx:       Math.cos(angle) * speed,
+      vy:       Math.sin(angle) * speed - 1.5,
+      rot:      Math.random() * Math.PI * 2,
+      rotSpeed: (Math.random() - 0.5) * 0.28,
+      life:     0,
+      maxLife:  80 + Math.floor(Math.random() * 20),
+    });
+  }
+}
+
+function drawDeathParticles() {
+  for (const p of deathParticles) {
+    const t = p.life / p.maxLife;
+    if (t >= 1) continue;
+    const alpha = 1 - t;
+    const r     = BIRD_R * 0.72 * (1 - t * 0.85);
+    if (r < 1) continue;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.rot);
+    if (imgOk) {
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(birdImg, -r, -r, r * 2, r * 2);
+    } else {
+      ctx.fillStyle = '#FF6600';
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 }
 
@@ -521,8 +568,53 @@ function roundRect(x, y, w, h, r) {
   ctx.closePath();
 }
 
+function drawDifficultyWidget(cx, bottomY) {
+  // Track background
+  const trackW = 200, trackH = 6, trackX = cx - trackW / 2;
+  const trackY = bottomY - trackH / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.roundRect ? ctx.roundRect(trackX, trackY, trackW, trackH, 3) : ctx.fillRect(trackX, trackY, trackW, trackH);
+  ctx.fill();
+
+  // Filled portion
+  const fillW = (difficulty - 1) / 4 * trackW;
+  const fillGr = ctx.createLinearGradient(trackX, 0, trackX + trackW, 0);
+  fillGr.addColorStop(0, '#40E0D0');
+  fillGr.addColorStop(1, '#FF4422');
+  ctx.fillStyle = fillGr;
+  ctx.beginPath();
+  ctx.fillRect(trackX, trackY, fillW, trackH);
+
+  // Tick marks
+  for (let i = 0; i < 5; i++) {
+    const tx = trackX + i * (trackW / 4);
+    ctx.fillStyle = i + 1 === difficulty ? '#FFD700' : 'rgba(255,255,255,0.6)';
+    ctx.beginPath();
+    ctx.arc(tx, bottomY, i + 1 === difficulty ? 7 : 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Labels
+  ctx.font = '15px Boogaloo, cursive';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.textAlign = 'left';
+  ctx.fillText('Балтика 0', trackX, bottomY - 14);
+  ctx.textAlign = 'right';
+  ctx.fillText('Бугульма', trackX + trackW, bottomY - 14);
+
+  // Current level label
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFD700';
+  ctx.font      = 'bold 15px Boogaloo, cursive';
+  ctx.shadowColor = '#FFD700'; ctx.shadowBlur = 8;
+  ctx.fillText(DIFF_LABELS[difficulty - 1], cx, bottomY + 22);
+  ctx.shadowBlur = 0;
+}
+
 function drawStartScreen() {
-  ctx.fillStyle = 'rgba(4,4,18,0.55)';
+  ctx.fillStyle = 'rgba(10,60,90,0.50)';
   ctx.fillRect(0, 0, W, H);
   const cx = W / 2, cy = H / 2;
 
@@ -544,7 +636,7 @@ function drawStartScreen() {
   ctx.shadowBlur = 0;
 
   ctx.font = '24px Boogaloo, cursive';
-  ctx.fillStyle = '#aaa8cc';
+  ctx.fillStyle = '#ddf4ff';
   ctx.fillText('ft. Техник', cx, cy + 8);
 
   // Pulsing tap instruction
@@ -559,7 +651,7 @@ function drawStartScreen() {
 
   if (best > 0) {
     ctx.font = '20px Boogaloo, cursive';
-    ctx.fillStyle = '#8888aa';
+    ctx.fillStyle = '#cceeff';
     ctx.fillText(`Best: ${best}`, cx, cy + 108);
   }
 
@@ -572,16 +664,20 @@ function drawStartScreen() {
     ctx.drawImage(birdImg, -28, -28, 56, 56);
   }
   ctx.restore();
+
+  // Difficulty widget drawn on canvas (HTML slider is overlaid on top)
+  const sliderBottom = H * 0.90 - 10;
+  drawDifficultyWidget(cx, sliderBottom);
 }
 
 function drawGameOver() {
-  ctx.fillStyle = 'rgba(4,4,18,0.72)';
+  ctx.fillStyle = 'rgba(10,40,70,0.75)';
   ctx.fillRect(0, 0, W, H);
   const cx = W / 2, cy = H / 2;
 
   // Panel
   const pw = Math.min(340, W - 40);
-  ctx.fillStyle = 'rgba(14,8,34,0.92)';
+  ctx.fillStyle = 'rgba(8,30,55,0.92)';
   roundRect(cx - pw / 2, cy - 140, pw, 290, 18);
   ctx.fill();
   ctx.strokeStyle = '#FFD700'; ctx.lineWidth = 2;
@@ -628,15 +724,19 @@ function drawGameOver() {
   ctx.fill();
   ctx.globalAlpha = 1;
   ctx.font = 'bold 26px Boogaloo, cursive';
-  ctx.fillStyle = '#0a0a18';
+  ctx.fillStyle = '#0a1a28';
   ctx.fillText('PLAY AGAIN', cx, bby + 32);
+
+  // Difficulty widget at bottom
+  const sliderBottom = H * 0.90 - 10;
+  drawDifficultyWidget(cx, sliderBottom);
 }
 
 // ── VIGNETTE ──────────────────────────────────────────────────────────────────
 function drawVignette() {
   const vg = ctx.createRadialGradient(W/2, H/2, H*0.3, W/2, H/2, H*0.85);
   vg.addColorStop(0, 'rgba(0,0,0,0)');
-  vg.addColorStop(1, 'rgba(0,0,0,0.55)');
+  vg.addColorStop(1, 'rgba(0,0,50,0.42)');
   ctx.fillStyle = vg;
   ctx.fillRect(0, 0, W, H);
 }
@@ -660,25 +760,45 @@ function doFlap() {
     state = S.PLAY;
     gameTicks = 0;
     startBeat();
+    spawnPipe();  // spawn first pipe immediately
   }
   if (state === S.PLAY) {
     bird.vy = FLAP_FORCE;
     speakFlap();
   }
   if (state === S.DEAD) {
+    if (ticks - deathTick < 30) return;  // let death animation start
     restart();
   }
 }
 
 function restart() {
   score = 0; pipes = []; gameTicks = 0; groundOff = 0; shakeAmt = 0;
+  deathParticles = [];
   resetBird();
   state = S.PLAY;
   startBeat();
+  spawnPipe();  // spawn first pipe immediately
 }
 
 function update() {
   ticks++;
+
+  // Update death particles and shake even in DEAD state
+  if (state === S.DEAD) {
+    for (const p of deathParticles) {
+      if (p.life < p.maxLife) {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.15;  // gravity
+        p.rot += p.rotSpeed;
+        p.life++;
+      }
+    }
+    if (shakeAmt > 0) shakeAmt *= 0.7;
+    return;
+  }
+
   if (state !== S.PLAY) return;
   gameTicks++;
 
@@ -687,11 +807,11 @@ function update() {
   bird.y   += bird.vy;
   bird.rot  = Math.max(-0.5, Math.min(Math.PI * 0.48, bird.vy * 0.065));
 
-  // Speed increases gently with score
-  const spd = BASE_SPEED + Math.floor(score / 8) * 0.18;
+  const cfg = getDiffConfig();
+  const spd = cfg.speed + Math.floor(score / 8) * 0.15;
 
   // Pipes
-  if (gameTicks % PIPE_FRAMES === 0) spawnPipe();
+  if (gameTicks % cfg.spawnFrames === 0) spawnPipe();
   for (const p of pipes) {
     p.x -= spd;
     if (!p.passed && p.x + PIPE_W < bird.x - BIRD_R) {
@@ -702,19 +822,19 @@ function update() {
   }
   pipes = pipes.filter(p => p.x > -(PIPE_W + 20));
 
-  // Parallax / ground
+  // Ground scroll
   groundOff += spd;
-  for (let i = 0; i < skyLayers.length; i++) skyOff[i] += skyLayers[i].speed;
 
   // Collision
   if (checkHit()) {
-    state    = S.DEAD;
+    state     = S.DEAD;
     deathTick = ticks;
     shakeAmt  = 14;
     stopBeat();
+    speakDeath();
+    spawnDeathParticles();
   }
 
-  // Screen shake decay
   if (shakeAmt > 0) shakeAmt *= 0.7;
 }
 
@@ -738,7 +858,12 @@ function render() {
 
   if (state === S.PLAY || state === S.DEAD) drawScore();
   if (state === S.START) drawStartScreen();
-  if (state === S.DEAD)  drawGameOver();
+
+  if (state === S.DEAD) {
+    drawDeathParticles();
+    const deathElapsed = ticks - deathTick;
+    if (deathElapsed >= 90) drawGameOver();
+  }
 
   // Death flash
   if (state === S.DEAD) {
@@ -750,6 +875,10 @@ function render() {
   }
 
   if (shakeAmt > 0.5 && state === S.DEAD) ctx.restore();
+
+  // Show/hide difficulty slider HTML element
+  const showDiff = state === S.START || (state === S.DEAD && ticks - deathTick >= 90);
+  diffWrap.style.display = showDiff ? 'block' : 'none';
 }
 
 // ── GAME LOOP ─────────────────────────────────────────────────────────────────
